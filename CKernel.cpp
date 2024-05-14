@@ -17,6 +17,7 @@ CKernel::CKernel(){
 
 // 构造函数（int _threadMax, int _threadMin, int _max, int _MaxListen）
 CKernel::CKernel(int _threadMax, int _threadMin, int _max, int _MaxListen){
+
     m_pThreadPool = new ThreadPool(this, _threadMax, _threadMin, _max);
     m_pEpollManager = new EpollManager(this, _MaxListen);
 //    m_pLogic = new CLogic(this);
@@ -51,7 +52,7 @@ void* CKernel::dealData(void *_arg){
     int bufLen = arg->iBufLen;
     char* buffer = arg->szBuf;
     // 调用 CLogic 中的 autoProtoDeal 函数根据协议头映射执行对应的处理函数
-//    kernel->m_pLogic->autoProtoDeal(fd, buffer, bufLen);
+    kernel->m_pLogic->autoProtoDeal(fd, buffer, bufLen);
 //    cout << "[" << fd << "] recved: " << buffer << endl;
     delete arg;
     return NULL;
