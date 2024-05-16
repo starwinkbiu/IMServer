@@ -1,3 +1,16 @@
+// 数据库连接
+#define _DEF_MYSQL_IP               "127.0.0.1"
+#define _DEF_MYSQL_USERNAME         "banser"
+#define _DEF_MYSQL_PASSWORD         "banser"
+#define _DEF_MYSQL_DATABASE         "d_imsystem"
+#define _DEF_MYSQL_PORT             (3306)
+
+#define _DEF_MYSQL_IP_MAX_COUNT             (20)
+#define _DEF_MYSQL_USERNAME_MAX_COUNT       (30)
+#define _DEF_MYSQL_PASSWORD_MAX_COUNT       (100)
+#define _DEF_MYSQL_DATABASE_MAX_COUNT       (30)
+
+// 协议总数
 #define _PROTO_MAX_COUNT        (100)
 
 #define _DEF_PROTO_BASE         (1000)

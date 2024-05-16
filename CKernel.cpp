@@ -12,15 +12,14 @@ CKernel* CKernel::kernel;
 CKernel::CKernel(){
     m_pThreadPool = new ThreadPool(this);
     m_pEpollManager = new EpollManager(this);
-//    m_pLogic = new CLogic(this);
+    m_pLogic = new CLogic(this);
 }
 
 // 构造函数（int _threadMax, int _threadMin, int _max, int _MaxListen）
 CKernel::CKernel(int _threadMax, int _threadMin, int _max, int _MaxListen){
-
     m_pThreadPool = new ThreadPool(this, _threadMax, _threadMin, _max);
     m_pEpollManager = new EpollManager(this, _MaxListen);
-//    m_pLogic = new CLogic(this);
+    m_pLogic = new CLogic(this);
 }
 
 // 析构函数
