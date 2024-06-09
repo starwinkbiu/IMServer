@@ -21,45 +21,48 @@ EpollManager* EpollManager::G_EPOLL;
 
 // deal_data_arg_t 析构函数
 deal_data_arg_t::~deal_data_arg_t(){
-    if(szBuf){
-        delete szBuf;
+    if(mt){
+        delete mt;
     }
-    szBuf = NULL;
-    iFd = 0;
-    iBufLen = 0;
+//    if(szBuf){
+//        delete szBuf;
+//    }
+//    szBuf = NULL;
+//    iFd = 0;
+//    iBufLen = 0;
+}
+
+// message_t 析构函数
+message_t::~message_t(){
+    initMessage();
+}
+
+void message_t::initMessage()
+{
+   type = false;
+   content = NULL;
+   size = 0;
+   protocol = 0;
 }
 
 // buffer_t 构造函数
-buffer_t::buffer_t()
-{
-    buffer = NULL;
-    initBuffer();
-}
+buffer_t::buffer_t(): sizeLen(0), contentSize(0), pos(0), buffer(NULL){}
 
 // buffer_t 析构函数
 buffer_t::~buffer_t(){
-    initBuffer();
+    clearBuffer();
 }
 
 // buffer 进行初始化
-void buffer_t::initBuffer(){
+void buffer_t::clearBuffer(){
     sizeLen = 0;
     pos = 0;
     contentSize = 0;
+    mt.initMessage();
     if(buffer){
         delete buffer;
     }
     buffer = NULL;
-}
-
-// 如果 contentSize 不为 0 就为 buffer 申请空间
-void buffer_t::allocBuffer(){
-    if(buffer){
-        delete buffer;
-    }
-    if(contentSize > 0){
-        buffer = new char[contentSize];
-    }
 }
 
 // event_t 构造函数
@@ -192,35 +195,44 @@ EpollManager::~EpollManager(){
 
 // 初始化 EpollManager
 void EpollManager::initEpollManager(int MaxListen){
+    // 初始化函数映射表
+    initFuncMap();
     // 创建 epoll
     epfd = epoll_create(MaxListen);
     if(epfd == -1){
         cout << __func__ << " error: ";
-        cout << errno << endl;
+        cout << "epoll_create: "<< errno << endl;
         exit(0);
     }
     // 初始化 listenSock
     int listenFd = socket(AF_INET, SOCK_STREAM, 0);
+    // 设置套接字可以重复使用地址
+    int opt = 1;
+    if (setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt failed");
+        close(listenFd);
+        exit(EXIT_FAILURE);
+    }
     m_pListenEvent = new event_t(this, listenFd, epfd);
     if(m_pListenEvent->fd == -1){
         cout << __func__ << " error: ";
-        cout << errno << endl;
+        cout << "event_t: " << errno << endl;
         exit(0);
     }
     // 绑定套接字
     struct sockaddr_in addr;
-    addr.sin_addr.s_addr = inet_addr("0.0.0.0");
+    addr.sin_addr.s_addr = inet_addr("192.168.150.128");
     addr.sin_port = htons(12345);
     addr.sin_family = AF_INET;
     // 监听
     if(bind(m_pListenEvent->fd, (sockaddr*)&addr, sizeof(addr)) == -1){
         cout << __func__ << " error: ";
-        cout << errno << endl;
+        cout << "bind: " << errno << endl;
         exit(0);
     }
     if(listen(m_pListenEvent->fd, 128) == -1){
         cout << __func__ << " error: ";
-        cout << errno << endl;
+        cout << "listen: " << errno << endl;
         exit(0);
     }
     // 设置套接字为非阻塞
@@ -229,6 +241,11 @@ void EpollManager::initEpollManager(int MaxListen){
     m_pListenEvent->addEvent(epfd, EPOLLIN | EPOLLET);
     // 启动循环监听事件
     m_iEpollRunning = 1;
+}
+
+void EpollManager::initFuncMap()
+{
+    funcMap[_DEF_SYS_HEART_REQ - 1] = &EpollManager::dealHeartReq;
 }
 
 // epoll 事件循环 (EPOLLET + EPOLLONESHOT)
@@ -260,6 +277,27 @@ void EpollManager::EventLoop(){
     delete []recvEvents;
 }
 
+void EpollManager::dealMessage(message_t *mt, int fd)
+{
+
+    deal_data_arg_t* dt = new deal_data_arg_t;
+    dt->iFd = fd;
+    dt->mt = mt;
+    if(mt->type){
+        // 初始化数据
+        task_t task;
+        task.bussiness = m_pKernel->dealData;
+        task.arg = dt;
+        // 发往上层处理器(多线程)
+        m_pKernel->addTask(task);
+        return;
+    }
+    // 否则底层直接处理
+    funcMap[mt->protocol - _DEF_SYS_PROTOCOL_BASE](dt);
+    // 最后清除mt
+    delete mt;
+}
+
 // 多线程接收数据
 void* EpollManager::clientSocketRecv(void* arg){
     event_t* eventManager = (event_t*)arg;
@@ -268,6 +306,106 @@ void* EpollManager::clientSocketRecv(void* arg){
     buffer_t* Buffer = eventManager->Buffer;
     // 存储接收数据长度
     int recvLen;
+    cout << "clientSocketRecv" << endl;
+
+    do{
+        // 判断长度字节有没有接受完整
+        if(Buffer->sizeLen < (int)sizeof(Buffer->contentSize)){
+            // 接收长度字节
+            recvLen = recv(fd, (char*)(&Buffer->contentSize) + eventManager->Buffer->sizeLen, \
+                           sizeof(Buffer->contentSize)-eventManager->Buffer->sizeLen, 0);
+            if(recvLen <= 0){
+                // 可能出错了
+                if(recvLen == 0){
+                    // 代表客户端断开了连接
+                    // 跳出循环处理错误
+                    break;
+                }
+                // 代表出错了
+                if(errno != EWOULDBLOCK){
+                    // 代表不是缓冲区无数据
+                    // 跳出循环处理错误
+                    break;
+                }
+                // 是缓冲区无数据
+                // 重置 EPOLLONESHOT 事件
+                eventManager->addEvent(_DEF_EPOLL_CLIENT_MODEL);
+                return NULL;
+            }else{
+                // 保存 Buffer 状态
+                eventManager->Buffer->sizeLen += recvLen;
+                // 判断接受完毕没有
+                if(Buffer->sizeLen < (int)sizeof(Buffer->contentSize)){
+                    // 如果还没有接受完毕，就继续接收
+                    continue;
+                }
+                // 接受完毕，处理长度字节
+                Buffer->mt.type = Buffer->contentSize & (CONTENTSIZE_MASK + 1);
+                Buffer->mt.size = Buffer->contentSize & CONTENTSIZE_MASK;
+                // 接受完毕，如果字节长度小于等于0, 关闭客户端连接
+                if(Buffer->mt.size <= 0){
+                    // 打印错误日志
+                    cout << "client[" << fd << "] send nothing, shutting down the socket..." << endl;
+                    // 删除eventManager
+                    delete eventManager;
+                    return NULL;
+                }
+                // 申请空间
+                Buffer->buffer = new char[Buffer->mt.size + 1];
+            }
+        }
+        // 长度字节接受完毕，开始接受数据字节
+        recvLen = recv(fd, Buffer->buffer + Buffer->pos, Buffer->mt.size - Buffer->pos, 0);
+        // 判断返回值
+        if(recvLen <= 0){
+            // 出现问题
+            if(recvLen == 0){
+                // 客户端断开了连接, 退出循环处理问题
+                break;
+            }
+            if(errno != EWOULDBLOCK){
+                // 代表不是缓冲区无数据
+                // 跳出循环处理错误
+                break;
+            }
+            // 是缓冲区无数据
+            // 重置 EPOLLONESHOT 事件
+            eventManager->addEvent(_DEF_EPOLL_CLIENT_MODEL);
+            return NULL;
+        }else{
+            Buffer->pos += recvLen;
+            // 判断数据是否接受完毕
+            if(Buffer->pos < Buffer->mt.size){
+                // 没有接受完毕，继续接受
+                continue;
+            }
+            // 接受完毕，填充mt
+            Buffer->mt.protocol = *(short*)Buffer->buffer;
+            Buffer->mt.content = Buffer->buffer + sizeof(Buffer->mt.protocol);
+            // 重新申请一个mt
+            message_t* new_mt = new message_t;
+            // 复制到新的new_mt
+            new_mt->size = Buffer->mt.size;
+            new_mt->type = Buffer->mt.type;
+            new_mt->protocol = Buffer->mt.protocol;
+            new_mt->content = new char[new_mt->size - sizeof(Buffer->mt.protocol) + 1];
+            memcpy(new_mt->content, Buffer->mt.content, new_mt->size - sizeof(Buffer->mt.protocol));
+            new_mt->content[new_mt->size - sizeof(Buffer->mt.protocol)] = 0;
+            // 处理数据
+            eventManager->epollManager->dealMessage(new_mt, fd);
+            // 清除Buffer
+            Buffer->clearBuffer();
+        }
+    }while(true);
+    if(recvLen == 0){
+        cout << "client[" << fd << "] closed from server" << endl;
+    }else{
+        cout << "client[" << fd << "] curried something worng, shutting down the socket..." << endl;
+    }
+    delete eventManager;
+    return NULL;
+
+    /*
     // 循环获取数据, 如果接收长度不为 0 说明有数据，就继续接收
     do{
         // 首先判断长度是否读取完整
@@ -387,6 +525,7 @@ void* EpollManager::clientSocketRecv(void* arg){
         cout << "[" << fd << "] offline" << endl;
     }
     return NULL;
+    */
 }
 
 // 多线程处理接收客户端连接 (EPOLLET + EPOLLONESHOT)
@@ -432,7 +571,17 @@ void EpollManager::setNonBlock(int iFd){
     }
 }
 
-
+void EpollManager::dealHeartReq(void *_arg)
+{
+    // 解析fd和mt
+    deal_data_arg_t* arg = (deal_data_arg_t*)_arg;
+    int fd = arg->iFd;
+    message_t* mt = arg->mt;
+    // 开始处理心跳请求
+    Qjson
+    // 删除arg
+    delete arg;
+}
 
 
 

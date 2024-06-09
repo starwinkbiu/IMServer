@@ -10,6 +10,7 @@ CKernel* CKernel::kernel;
 
 // 构造函数
 CKernel::CKernel(){
+    kernel = this;
     m_pThreadPool = new ThreadPool(this);
     m_pEpollManager = new EpollManager(this);
     m_pLogic = new CLogic(this);
@@ -17,6 +18,7 @@ CKernel::CKernel(){
 
 // 构造函数（int _threadMax, int _threadMin, int _max, int _MaxListen）
 CKernel::CKernel(int _threadMax, int _threadMin, int _max, int _MaxListen){
+    kernel = this;
     m_pThreadPool = new ThreadPool(this, _threadMax, _threadMin, _max);
     m_pEpollManager = new EpollManager(this, _MaxListen);
     m_pLogic = new CLogic(this);
@@ -47,12 +49,13 @@ void CKernel::addTask(task_t task){
 // EpollManager->CLogic
 void* CKernel::dealData(void *_arg){
     deal_data_arg_t* arg = (deal_data_arg_t*)_arg;
+    message_t* mt;
     int fd = arg->iFd;
-    int bufLen = arg->iBufLen;
-    char* buffer = arg->szBuf;
+    mt = arg->mt;
     // 调用 CLogic 中的 autoProtoDeal 函数根据协议头映射执行对应的处理函数
-    kernel->m_pLogic->autoProtoDeal(fd, buffer, bufLen);
-//    cout << "[" << fd << "] recved: " << buffer << endl;
+//    kernel->m_pLogic->autoProtoDeal(fd, buffer, bufLen);
+    cout << "[" << fd << "] recved: " << mt->content << endl;
+    // 释放arg空间
     delete arg;
     return NULL;
 }
