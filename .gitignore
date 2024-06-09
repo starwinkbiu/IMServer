@@ -2,3 +2,5 @@ build/
 IMSystem.pro
 IMSystem.pro.user
 *.autosave
+build-5.10.0/
+.gitignore

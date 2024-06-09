@@ -1,19 +1,24 @@
-#include <sys/epoll.h>
 #include <iostream>
-#include "EpollManager.h"
-#include <sys/types.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include "ThreadPool.h"
-#include "CKernel.h"
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <time.h>
+#include <QDateTime>
+#include <QMutexLocker>
+
+#include "EpollManager.h"
+#include "ThreadPool.h"
+#include "CKernel.h"
 
 using namespace std;
 
@@ -253,6 +258,12 @@ void EpollManager::EventLoop(){
     int ready;
     task_t task;
     epoll_event* recvEvents = new epoll_event[_DEF_EPOLL_WAITRECV_NUM];
+    // 首先开启timer线程
+//    if(pthread_create(&timerThreadId, NULL, &EpollManager::timer, this)){
+//        cout << __func__ << " error: ";
+//        cout << "thread create error" << endl;
+//        return;
+//    }
     // 开启事件监听循环
     while(m_iEpollRunning){
         // 等待事件到来（0 => 非阻塞）
@@ -277,12 +288,22 @@ void EpollManager::EventLoop(){
     delete []recvEvents;
 }
 
-void EpollManager::dealMessage(message_t *mt, int fd)
+void EpollManager::dealMessage(message_t *mt, event_t* eventManager)
 {
 
     deal_data_arg_t* dt = new deal_data_arg_t;
-    dt->iFd = fd;
-    dt->mt = mt;
+    dt->eventManager = eventManager;
+    dt->pThis = this;
+    // 重新申请一个mt
+    message_t* new_mt = new message_t;
+    // 复制到新的new_mt
+    new_mt->size = mt->size;
+    new_mt->type = mt->type;
+    new_mt->protocol = mt->protocol;
+    new_mt->content = new char[new_mt->size + 1];
+    memcpy(new_mt->content, mt->content, mt->size);
+    new_mt->content[new_mt->size] = 0;
+    dt->mt = new_mt;
     if(mt->type){
         // 初始化数据
         task_t task;
@@ -293,9 +314,35 @@ void EpollManager::dealMessage(message_t *mt, int fd)
         return;
     }
     // 否则底层直接处理
-    funcMap[mt->protocol - _DEF_SYS_PROTOCOL_BASE](dt);
-    // 最后清除mt
-    delete mt;
+    funcMap[mt->protocol - _DEF_SYS_PROTOCOL_BASE - 1](dt);
+    return;
+}
+
+void *EpollManager::timer(void *arg)
+{
+    EpollManager* pThis = (EpollManager*)arg;
+    timespec tp;
+    tp.tv_sec = 1;
+    tp.tv_nsec = 0;
+    while(pThis->m_iEpollRunning){
+        // 获取时间戳
+        qint64 curtime = QDateTime::currentSecsSinceEpoch();
+        QMutexLocker locker(&pThis->heartMapMutex);
+        for(auto ite = pThis->heartMap.begin(); ite != pThis->heartMap.end(); ++ite){
+            event_t* eventManager = ite.key();
+            qint64 heartbeat = ite.value();
+            if(curtime - heartbeat >= 30){
+                // 打印日志
+                cout << "client [" << eventManager->fd << ":" << heartbeat << "] Timeout, closing the connect with this client" << endl;
+                // 如果大于等于30秒, 与客户端断开连接
+                delete eventManager;
+                // 擦除与此连接相关的心跳记录
+                pThis->heartMap.erase(ite);
+            }
+        }
+        // 休眠1秒
+        nanosleep(&tp, NULL);
+    }
 }
 
 // 多线程接收数据
@@ -382,17 +429,11 @@ void* EpollManager::clientSocketRecv(void* arg){
             // 接受完毕，填充mt
             Buffer->mt.protocol = *(short*)Buffer->buffer;
             Buffer->mt.content = Buffer->buffer + sizeof(Buffer->mt.protocol);
-            // 重新申请一个mt
-            message_t* new_mt = new message_t;
-            // 复制到新的new_mt
-            new_mt->size = Buffer->mt.size;
-            new_mt->type = Buffer->mt.type;
-            new_mt->protocol = Buffer->mt.protocol;
-            new_mt->content = new char[new_mt->size - sizeof(Buffer->mt.protocol) + 1];
-            memcpy(new_mt->content, Buffer->mt.content, new_mt->size - sizeof(Buffer->mt.protocol));
-            new_mt->content[new_mt->size - sizeof(Buffer->mt.protocol)] = 0;
+            // 更改size
+            Buffer->mt.size -= sizeof(Buffer->mt.protocol);
+            Buffer->mt.content[Buffer->mt.size] = 0;
             // 处理数据
-            eventManager->epollManager->dealMessage(new_mt, fd);
+            eventManager->epollManager->dealMessage(&Buffer->mt, eventManager);
             // 清除Buffer
             Buffer->clearBuffer();
         }
@@ -571,17 +612,66 @@ void EpollManager::setNonBlock(int iFd){
     }
 }
 
+void message_t::setMessage(const char *_content, int _contentsize, bool _type, short _protocol)
+{
+    content = new char[_contentsize + 1];
+    type = _type;
+    _protocol = protocol;
+    size = _contentsize + sizeof(protocol);
+    // 复制内容
+    memcpy(content, _content, _contentsize);
+}
+
+void message_t::getMessage(const char *_content, int _allsize, bool _type, short _protocol)
+{
+    size = _allsize - sizeof(protocol);
+    content = new char[size + 1];
+    type = _type;
+    _protocol = protocol;
+    // 复制内容
+    memcpy(content, _content, size);
+}
+
 void EpollManager::dealHeartReq(void *_arg)
 {
     // 解析fd和mt
     deal_data_arg_t* arg = (deal_data_arg_t*)_arg;
-    int fd = arg->iFd;
+    EpollManager* pThis = arg->pThis;
+    event_t* eventManager = arg->eventManager;
     message_t* mt = arg->mt;
+    cout << "message info: ";
+    cout << "syspro: [" << mt->type << "] ";
+    cout << "size: [" << mt->size << "] ";
+    cout << "protocol: [" << mt->protocol << "]\n";
+    cout << "content: \n" << mt->content << endl;
     // 开始处理心跳请求
-    Qjson
+    // 首先解析content
+    QString qs(mt->content);
+    QJsonDocument jd = QJsonDocument::fromJson(qs.toUtf8());
+    if(jd.isNull()){
+        cout << "QJsonDocument is null" << endl;
+        return;
+    }
+    if(jd.isObject()){
+        // 如果是对象，就解析对象
+        QJsonObject object = jd.object();
+        // 判断包不包含timestamp
+        if(object.contains("TimeStamp")){
+            // 如果包含，获取内容
+            qint64 timestamp = static_cast<qint64>(object["TimeStamp"].toDouble());
+            // 上锁
+            QMutexLocker locker(&eventManager->epollManager->heartMapMutex);
+            // 更新当前连接客户端的heartbeat时间
+            pThis->heartMap[eventManager] = timestamp;
+            cout << "recved client [" << eventManager->fd << ":" << timestamp << "] heart beat" << endl;
+        }
+    }
     // 删除arg
     delete arg;
+    return;
 }
+
+
 
 
 

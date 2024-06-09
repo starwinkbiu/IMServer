@@ -1,5 +1,9 @@
+#ifndef EPOLLMANAGER_H
+#define EPOLLMANAGER_H
+
 #include <sys/types.h>
 #include <sys/epoll.h>
+#include <QMutex>
 #include <QMap>
 #include "packDef.h"
 
@@ -16,12 +20,14 @@
 class CKernel;
 class EpollManager;
 struct message_t;
+struct event_t;
 
 // 调用处理函数的arg模板
 struct deal_data_arg_t{
     ~deal_data_arg_t();
-    int iFd;
+    event_t* eventManager;
     message_t* mt;
+    EpollManager* pThis;
 //    char* szBuf;
 //    int iBufLen;
 };
@@ -33,6 +39,8 @@ typedef struct message_t{
     short protocol; // 协议
     char* content; // 消息内容
     void initMessage();
+    void setMessage(const char *_content, int _contentsize, bool _type, short _protocol);
+    void getMessage(const char *_content, int _allsize, bool _type, short _protocol);
 } message_t;
 
 struct buffer_t{
@@ -81,7 +89,11 @@ public:
     // 函数映射表
     Func funcMap[_DEF_MAX_MAP_LEN];
     // 记录客户端心跳时间
-    QMap<int, qint64> heartMap;
+    QMap<event_t*, qint64> heartMap;
+    // 锁
+    QMutex heartMapMutex;
+    // timerThreadId
+    pthread_t timerThreadId;
     EpollManager(CKernel* kernel);
     EpollManager(CKernel* kernel, int MaxListen);
     ~EpollManager();
@@ -94,7 +106,9 @@ public:
     // 发送数据（不使用多线程发送）
     void sendData(int iClientFd, char* szSendBuf, int iSize);
     // 底层数据处理模块
-    void dealMessage(message_t* mt, int fd);
+    void dealMessage(message_t* mt, event_t* eventManager);
+    // 定时器
+    static void* timer(void* arg);
     // 多线程处理接收的数据
     static void* clientSocketRecv(void* arg);
     // 多线程处理接收客户端连接
@@ -104,3 +118,5 @@ public:
     // --------协议处理函数--------
     static void dealHeartReq(void* arg);
 };
+
+#endif

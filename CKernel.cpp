@@ -50,11 +50,11 @@ void CKernel::addTask(task_t task){
 void* CKernel::dealData(void *_arg){
     deal_data_arg_t* arg = (deal_data_arg_t*)_arg;
     message_t* mt;
-    int fd = arg->iFd;
+    event_t* eventManager = arg->eventManager;
     mt = arg->mt;
     // 调用 CLogic 中的 autoProtoDeal 函数根据协议头映射执行对应的处理函数
 //    kernel->m_pLogic->autoProtoDeal(fd, buffer, bufLen);
-    cout << "[" << fd << "] recved: " << mt->content << endl;
+    cout << "[" << eventManager->fd << "] recved: " << mt->content << endl;
     // 释放arg空间
     delete arg;
     return NULL;
